@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Game of Life with Audio Input</title>
+    <style>
+        canvas {
+            background: #000;
+            display: block;
+            margin: 20px auto;
+        }
+
+        #gameCanvas {
+            width: 100%;
+            height: 800px;
+        }
+
+        #volumeCanvas {
+            background: #555;
+        }
+
+        html {
+            background-color: black;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <canvas id="volumeCanvas" width="400" height="50"></canvas>
+    <script src="patterns.js" defer></script>
+    <script src="game-of-life.js" defer></script>
+</body>
+
+</html>
