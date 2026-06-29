@@ -1,11 +1,18 @@
-// Pattern data lives in patterns.js (must be loaded before this file).
+// patterns.js must be loaded before this file.
 
-// Stamp a pattern (array of [x, y]) onto the grid at the given offset.
-function placePattern(coords, startX, startY) {
-    for (const [x, y] of coords) {
-        grid[x + startX][y + startY] = 1;
-    }
-}
+// ===== Live-tunable config (read/written by the control panel) =====
+const config = {
+    cellSize: 2.2,        // pixel size of each cell (smaller = finer grid)
+    threshold: 13,        // audio level needed to spawn gliders
+    cooldownPeriod: 2500, // ms between allowed spawns
+    tickInterval: 75,     // ms per simulation step (lower = faster)
+    sideMarginPct: 0.1,   // how far in from each edge gliders enter (0–0.45)
+    aliveColor: '#ffffff',
+    deadColor: '#000000',
+    spawnGliders: true,   // let audio spawn gliders
+    paused: false,        // freeze the simulation
+    seedPattern: 'pulsar' // pattern used by Re-seed
+};
 
 // ===== Canvas / grid setup =====
 const gameCanvas = document.getElementById('gameCanvas');
@@ -16,58 +23,90 @@ const volumeCanvas = document.getElementById('volumeCanvas');
 const volumeCtx = volumeCanvas.getContext('2d');
 const width = gameCanvas.width;
 const height = gameCanvas.height;
-let cellSize = 2.2; // larger cells = clearer visuals
-const rows = Math.floor(height / cellSize);
-const cols = Math.floor(width / cellSize);
-let grid = new Array(cols).fill(null).map(() => new Array(rows).fill(0));
+
+let cellSize, rows, cols, grid;
 let lastGliderTime = 0;
-let cooldownPeriod = 2500;
-let threshold = 13;
+
+function buildGrid() {
+    cellSize = config.cellSize;
+    rows = Math.floor(height / cellSize);
+    cols = Math.floor(width / cellSize);
+    grid = new Array(cols).fill(null).map(() => new Array(rows).fill(0));
+}
+
+// Stamp a pattern (array of [x, y]) onto the grid, skipping out-of-bounds cells.
+function placePattern(coords, startX, startY) {
+    for (const [x, y] of coords) {
+        const gx = x + startX, gy = y + startY;
+        if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+            grid[gx][gy] = 1;
+        }
+    }
+}
+
+// Drop the configured seed pattern centered near the top.
+function seed() {
+    const p = patterns[config.seedPattern];
+    if (!p) return;
+    const maxX = Math.max(...p.map(c => c[0]));
+    const startX = Math.max(0, Math.floor(cols / 2 - maxX / 2));
+    placePattern(p, startX, 2);
+}
+
+buildGrid();
+if (config.cellSize < 5) seed();
 
 // ===== Audio input =====
+let analyser = null, dataArray = null, bufferLength = 0;
+
 navigator.mediaDevices.getUserMedia({ audio: true, video: false })
     .then(processAudio)
     .catch(error => console.log('Error accessing microphone:', error));
 
 function processAudio(stream) {
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const analyser = audioContext.createAnalyser();
+    analyser = audioContext.createAnalyser();
     const microphone = audioContext.createMediaStreamSource(stream);
     microphone.connect(analyser);
     analyser.fftSize = 256;
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    let toggle = true;
+    bufferLength = analyser.frequencyBinCount;
+    dataArray = new Uint8Array(bufferLength);
+}
 
-    function audioToGrid() {
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-            sum += dataArray[i];
-        }
-        const average = sum / bufferLength;
-        const inCooldown = Date.now() - lastGliderTime < cooldownPeriod;
-        drawVolumeIndicator(average, threshold, inCooldown);
-        if (!inCooldown && average > threshold) {
-            const sideMargin = Math.floor(cols * 0.1);
-            const topY = 0;
-            createGlider(sideMargin, topY, "topLeftToBottomRight");
-            createGlider(cols - sideMargin - 3, topY, "topRightToBottomLeft");
-            toggle = !toggle;
-            lastGliderTime = Date.now();
-        }
+function audioToGrid() {
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
+    const average = sum / bufferLength;
+
+    const inCooldown = Date.now() - lastGliderTime < config.cooldownPeriod;
+    drawVolumeIndicator(average, config.threshold, inCooldown);
+
+    if (config.spawnGliders && !inCooldown && average > config.threshold) {
+        const sideMargin = Math.floor(cols * config.sideMarginPct);
+        createGlider(sideMargin, 0, "topLeftToBottomRight");
+        createGlider(cols - sideMargin - 3, 0, "topRightToBottomLeft");
+        lastGliderTime = Date.now();
     }
-
-    setInterval(() => {
-        audioToGrid();
-        updateGameOfLife();
-        draw();
-    }, 75);
 }
 
 function createGlider(x, y, direction) {
     placePattern(patterns.gliders[direction], x, y);
 }
+
+// ===== Main loop (restartable so speed can change live) =====
+let loopId = null;
+function startLoop() {
+    if (loopId) clearInterval(loopId);
+    loopId = setInterval(tick, config.tickInterval);
+}
+
+function tick() {
+    if (analyser) audioToGrid();
+    if (!config.paused) updateGameOfLife();
+    draw();
+}
+startLoop();
 
 // ===== Game of Life =====
 function updateGameOfLife() {
@@ -95,11 +134,12 @@ function updateGameOfLife() {
 }
 
 function draw() {
-    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = config.deadColor;
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = config.aliveColor;
     for (let x = 0; x < cols; x++) {
         for (let y = 0; y < rows; y++) {
-            ctx.fillStyle = grid[x][y] === 1 ? 'white' : 'black';
-            ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+            if (grid[x][y] === 1) ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
         }
     }
 }
@@ -117,7 +157,11 @@ function drawVolumeIndicator(volume, threshold, inCooldown) {
     }
 }
 
-// ===== Initial seed =====
-if (cellSize < 5) {
-    placePattern(patterns.pulsar, Math.floor(cols / 2 - 8), 0);
-}
+// ===== API exposed to the control-panel window =====
+window.gameAPI = {
+    config,
+    restartLoop: startLoop,                 // call after changing tickInterval
+    rebuild() { buildGrid(); seed(); },     // call after changing cellSize
+    clear() { buildGrid(); },               // wipe the grid, keep dimensions
+    reseed() { seed(); }                    // drop the seed pattern again
+};
